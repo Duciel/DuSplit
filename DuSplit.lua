@@ -325,12 +325,254 @@ SlashCmdList["DUSPLIT"] = function(input)
     if running and cur > 1 then cur = cur - 1; times[cur] = nil; lastPrev = times[cur - 1] or 0; Refresh() end
   elseif cmd == "mapscale" and tonumber(rest) then
     DuSplitDB.mapscale = tonumber(rest); msg("Map scale set (fallback mode only).")
+  elseif cmd == "config" then DuSplit_ToggleConfig()
   elseif cmd == "show" then f:Show()
   elseif cmd == "hide" then f:Hide()
   else
     msg("/ds new <route> | load <route> | routes | list | del <n>")
     msg("/ds addcombat [label] | addkill [label]   (uses your current target)")
     msg("/ds addpos <radius> [label]               (uses your current position)")
-    msg("/ds start | reset | split | skip | undo | show | hide")
+    msg("/ds start | reset | split | skip | undo | show | hide | config")
   end
 end
+
+-------------------------------------------------------------------- Config window
+local cfg = CreateFrame("Frame", "DuSplitConfig", UIParent)
+cfg:SetWidth(310); cfg:SetHeight(460)
+cfg:SetPoint("CENTER", UIParent, "CENTER", -250, 0)
+cfg:SetFrameStrata("DIALOG")
+cfg:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+  edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 16, edgeSize = 12,
+  insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+cfg:SetBackdropColor(0, 0, 0, 0.9)
+cfg:SetMovable(true); cfg:EnableMouse(true); cfg:EnableMouseWheel(true)
+cfg:RegisterForDrag("LeftButton")
+cfg:SetScript("OnDragStart", function() this:StartMoving() end)
+cfg:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
+cfg:Hide()
+tinsert(UISpecialFrames, "DuSplitConfig") -- ESC closes it
+
+local btnN, editN = 0, 0
+local function MakeText(text, x, y, w, font)
+  local t = cfg:CreateFontString(nil, "OVERLAY", font or "GameFontNormalSmall")
+  t:SetPoint("TOPLEFT", cfg, "TOPLEFT", x, y)
+  if w then t:SetWidth(w) end
+  t:SetJustifyH("LEFT")
+  t:SetText(text)
+  return t
+end
+local function MakeButton(text, w, x, y, fn)
+  btnN = btnN + 1
+  local b = CreateFrame("Button", "DuSplitBtn" .. btnN, cfg, "UIPanelButtonTemplate")
+  b:SetWidth(w); b:SetHeight(22)
+  b:SetPoint("TOPLEFT", cfg, "TOPLEFT", x, y)
+  b:SetText(text)
+  b:SetScript("OnClick", fn)
+  return b
+end
+local function MakeEdit(w, x, y, text)
+  editN = editN + 1
+  local e = CreateFrame("EditBox", "DuSplitEdit" .. editN, cfg, "InputBoxTemplate")
+  e:SetWidth(w); e:SetHeight(20)
+  e:SetPoint("TOPLEFT", cfg, "TOPLEFT", x, y)
+  e:SetAutoFocus(false)
+  e:SetText(text or "")
+  e:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+  e:SetScript("OnEnterPressed", function() this:ClearFocus() end)
+  return e
+end
+
+local CFG_ROWS = 10
+local listRows, listOffset = {}, 0
+local routeBox, labelBox, radiusBox, curRoute, targetText
+
+local function RefreshConfig()
+  curRoute:SetText("Current route: |cffffff00" .. (DuSplitDB.current or "none") .. "|r")
+  local rt = Route()
+  local n = rt and table.getn(rt.splits) or 0
+  if listOffset > n - CFG_ROWS then listOffset = n - CFG_ROWS end
+  if listOffset < 0 then listOffset = 0 end
+  for i = 1, CFG_ROWS do
+    local row = listRows[i]
+    local idx = listOffset + i
+    local s = rt and rt.splits[idx]
+    if s then
+      local kind = (s.type == "pos") and "pos" or ((s.type == "combat") and "combat start" or "combat end")
+      row.text:SetText(idx .. ". " .. s.name .. " |cff999999[" .. kind .. "]|r")
+      row.del.idx = idx
+      row:Show()
+    else
+      row:Hide()
+    end
+  end
+end
+
+local function UpdateTarget()
+  local tn = UnitName("target")
+  if tn then
+    targetText:SetText("Target: |cffffff00" .. tn .. "|r" .. (GuidOf("target") and "" or " |cffff6666(no GUID)|r"))
+  else
+    targetText:SetText("Target: |cff999999none|r")
+  end
+end
+
+local function EnsureRoute()
+  if not Route() then
+    DuSplitDB.routes["Default"] = DuSplitDB.routes["Default"] or { splits = {} }
+    DuSplitDB.current = "Default"
+  end
+end
+
+MakeText("DuSplit - Config", 0, -12, 310, "GameFontNormal"):SetJustifyH("CENTER")
+local closeBtn = CreateFrame("Button", "DuSplitConfigClose", cfg, "UIPanelCloseButton")
+closeBtn:SetPoint("TOPRIGHT", cfg, "TOPRIGHT", -2, -2)
+
+-- route
+MakeText("Route", 14, -40)
+routeBox = MakeEdit(150, 60, -36, "")
+MakeButton("New / Load", 80, 214, -35, function()
+  local name = routeBox:GetText()
+  if name == "" then msg("Enter a route name."); return end
+  if DuSplitDB.routes[name] then
+    msg("Route loaded: " .. name)
+  else
+    DuSplitDB.routes[name] = { splits = {} }
+    msg("Route created: " .. name)
+  end
+  DuSplitDB.current = name
+  Reset(); RefreshConfig()
+end)
+curRoute = MakeText("", 14, -62, 280)
+
+-- add split
+MakeText("Add a split", 14, -86, 280, "GameFontNormal")
+MakeText("Name", 14, -110)
+labelBox = MakeEdit(150, 60, -106, "")
+MakeText("(optional)", 218, -110)
+MakeText("Radius (yd)", 14, -134)
+radiusBox = MakeEdit(50, 90, -130, "10")
+
+MakeButton("Add current position", 282, 14, -156, function()
+  local x, y = GetPos()
+  if not x then msg("Cannot read your position here."); return end
+  EnsureRoute()
+  local radius = tonumber(radiusBox:GetText()) or 10
+  local label = labelBox:GetText()
+  if label == "" then label = "Point " .. (table.getn(Route().splits) + 1) end
+  AddSplit({ name = label, type = "pos", x = x, y = y, radius = radius, zone = GetRealZoneText() })
+  labelBox:SetText(""); RefreshConfig()
+end)
+
+targetText = MakeText("", 14, -190, 282)
+local function AddFromTarget(kind)
+  local tn = UnitName("target")
+  if not tn then msg("Target a mob first."); return end
+  EnsureRoute()
+  local guid = GuidOf("target")
+  if not guid then msg("No GUID available (SuperWoW?) - matching by name.") end
+  local label = labelBox:GetText()
+  if label == "" then label = ((kind == "combat") and "Pull: " or "Kill: ") .. tn end
+  AddSplit({ name = label, type = kind, target = tn, guid = guid })
+  labelBox:SetText(""); RefreshConfig()
+end
+MakeButton("Target: Combat Start", 138, 14, -208, function() AddFromTarget("combat") end)
+MakeButton("Target: Combat End", 138, 158, -208, function() AddFromTarget("kill") end)
+
+-- split list
+MakeText("Splits (mouse wheel to scroll)", 14, -244, 280, "GameFontNormal")
+for i = 1, CFG_ROWS do
+  local row = CreateFrame("Frame", nil, cfg)
+  row:SetWidth(282); row:SetHeight(16)
+  row:SetPoint("TOPLEFT", cfg, "TOPLEFT", 14, -262 - (i - 1) * 17)
+  row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
+  row.text:SetWidth(250); row.text:SetHeight(12); row.text:SetJustifyH("LEFT")
+  btnN = btnN + 1
+  row.del = CreateFrame("Button", "DuSplitBtn" .. btnN, row, "UIPanelButtonTemplate")
+  row.del:SetWidth(22); row.del:SetHeight(16)
+  row.del:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+  row.del:SetText("X")
+  row.del:SetScript("OnClick", function()
+    local rt = Route()
+    if rt and rt.splits[this.idx] then
+      table.remove(rt.splits, this.idx)
+      rt.pb = nil; rt.pbTotal = nil; rt.best = nil
+      Refresh(); RefreshConfig()
+      msg("Split removed (PB cleared).")
+    end
+  end)
+  listRows[i] = row
+end
+
+MakeButton("Start", 90, 14, -438, function() Start() end)
+MakeButton("Reset", 90, 110, -438, function() Reset() end)
+MakeButton("Close", 90, 206, -438, function() cfg:Hide() end)
+
+cfg:SetScript("OnMouseWheel", function()
+  if arg1 > 0 then listOffset = listOffset - 1 else listOffset = listOffset + 1 end
+  RefreshConfig()
+end)
+cfg:RegisterEvent("PLAYER_TARGET_CHANGED")
+cfg:SetScript("OnEvent", function() if this:IsShown() then UpdateTarget() end end)
+cfg:SetScript("OnShow", function() UpdateTarget(); RefreshConfig() end)
+
+function DuSplit_ToggleConfig()
+  if cfg:IsShown() then cfg:Hide() else cfg:Show() end
+end
+
+-------------------------------------------------------------------- Minimap button
+local mb = CreateFrame("Button", "DuSplitMinimapButton", Minimap)
+mb:SetWidth(31); mb:SetHeight(31)
+mb:SetFrameStrata("MEDIUM"); mb:SetFrameLevel(8)
+mb:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+mb:RegisterForDrag("LeftButton")
+mb:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+local mbIcon = mb:CreateTexture(nil, "BACKGROUND")
+mbIcon:SetTexture("Interface\\Icons\\INV_Misc_PocketWatch_01")
+mbIcon:SetWidth(20); mbIcon:SetHeight(20)
+mbIcon:SetPoint("TOPLEFT", mb, "TOPLEFT", 7, -5)
+local mbBorder = mb:CreateTexture(nil, "OVERLAY")
+mbBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+mbBorder:SetWidth(53); mbBorder:SetHeight(53)
+mbBorder:SetPoint("TOPLEFT", mb, "TOPLEFT", 0, 0)
+
+local function PlaceMinimapButton()
+  local a = (DuSplitDB and DuSplitDB.minimapAngle) or 220
+  local r = math.rad(a)
+  mb:ClearAllPoints()
+  mb:SetPoint("CENTER", Minimap, "CENTER", math.cos(r) * 80, math.sin(r) * 80)
+end
+PlaceMinimapButton()
+
+mb:SetScript("OnDragStart", function() this.dragging = true end)
+mb:SetScript("OnDragStop", function() this.dragging = false end)
+mb:SetScript("OnUpdate", function()
+  if not this.dragging or not DuSplitDB then return end
+  local mx, my = GetCursorPosition()
+  local s = Minimap:GetEffectiveScale()
+  local cx, cy = Minimap:GetCenter()
+  DuSplitDB.minimapAngle = math.deg(math.atan2(my / s - cy, mx / s - cx))
+  PlaceMinimapButton()
+end)
+mb:SetScript("OnClick", function()
+  if arg1 == "RightButton" then
+    DuSplit_ToggleConfig()
+  elseif f:IsShown() then
+    f:Hide()
+  else
+    f:Show()
+  end
+end)
+mb:SetScript("OnEnter", function()
+  GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+  GameTooltip:SetText("DuSplit")
+  GameTooltip:AddLine("Left click: show/hide splits", 1, 1, 1)
+  GameTooltip:AddLine("Right click: config", 1, 1, 1)
+  GameTooltip:AddLine("Drag: move button", 0.6, 0.6, 0.6)
+  GameTooltip:Show()
+end)
+mb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+local mbInit = CreateFrame("Frame")
+mbInit:RegisterEvent("ADDON_LOADED")
+mbInit:SetScript("OnEvent", function() if arg1 == "DuSplit" then PlaceMinimapButton() end end)

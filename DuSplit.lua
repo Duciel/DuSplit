@@ -531,8 +531,8 @@ closeBtn:SetPoint("TOPRIGHT", cfg, "TOPRIGHT", -2, -2)
 
 -- route
 MakeText("Route", 14, -40)
-routeBox = MakeEdit(150, 60, -36, "")
-MakeButton("New / Load", 80, 214, -35, function()
+routeBox = MakeEdit(96, 60, -36, "")
+MakeButton("New / Load", 76, 160, -35, function()
   local name = routeBox:GetText()
   if name == "" then msg("Enter a route name."); return end
   if DuSplitDB.routes[name] then
@@ -545,6 +545,33 @@ MakeButton("New / Load", 80, 214, -35, function()
   StopEdit()
   Reset(); RefreshConfig()
 end)
+-- delete the currently selected route (with confirmation)
+local deleteTarget
+StaticPopupDialogs["DUSPLIT_DELETE_ROUTE"] = {
+  text = "Delete route '%s' with all its splits and times?",
+  button1 = YES,
+  button2 = NO,
+  OnAccept = function()
+    local name = deleteTarget
+    if not name or not DuSplitDB.routes[name] then return end
+    DuSplitDB.routes[name] = nil
+    if DuSplitDB.pending and DuSplitDB.pending.route == name then DuSplitDB.pending = nil end
+    if DuSplitDB.current == name then DuSplitDB.current = nil end
+    StopEdit(); Reset(); RefreshConfig()
+    msg("Route deleted: " .. name)
+  end,
+  timeout = 0,
+  whileDead = 1,
+  hideOnEscape = 1,
+}
+MakeButton("Delete", 54, 240, -35, function()
+  local name = DuSplitDB.current
+  if not name or not DuSplitDB.routes[name] then msg("No route selected."); return end
+  if running then msg("Reset the run before deleting the route."); return end
+  deleteTarget = name
+  StaticPopup_Show("DUSPLIT_DELETE_ROUTE", name)
+end)
+
 local routeDrop = CreateFrame("Frame", "DuSplitRouteDrop", cfg, "UIDropDownMenuTemplate")
 routeDrop:SetPoint("TOPLEFT", cfg, "TOPLEFT", -2, -58)
 -- width helper: argument order differs between client builds, so try both

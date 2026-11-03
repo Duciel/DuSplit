@@ -387,7 +387,7 @@ end
 
 -------------------------------------------------------------------- Config window
 local cfg = CreateFrame("Frame", "DuSplitConfig", UIParent)
-cfg:SetWidth(310); cfg:SetHeight(496)
+cfg:SetWidth(310); cfg:SetHeight(512)
 cfg:SetPoint("CENTER", UIParent, "CENTER", -250, 0)
 cfg:SetFrameStrata("DIALOG")
 cfg:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -434,6 +434,7 @@ end
 local CFG_ROWS = 10
 local listRows, listOffset = {}, 0
 local routeBox, labelBox, radiusBox, curRoute, targetText
+local selected, addHeader, saveBtn, cancelBtn -- split currently being edited
 
 local function RefreshConfig()
   getglobal("DuSplitRouteDropText"):SetText(DuSplitDB.current or "(no route)")
@@ -449,8 +450,11 @@ local function RefreshConfig()
       local kind = (s.type == "pos") and "pos" or ((s.type == "combat") and "combat start" or "combat end")
       row.text:SetText(idx .. ". " .. s.name .. " |cff999999[" .. kind .. "]|r")
       row.del.idx = idx; row.up.idx = idx; row.down.idx = idx
+      row.idx = idx
+      if selected == idx then row.hl:Show() else row.hl:Hide() end
       row:Show()
     else
+      row.idx = nil
       row:Hide()
     end
   end
@@ -472,12 +476,50 @@ local function EnsureRoute()
   end
 end
 
+local function StopEdit()
+  selected = nil
+  labelBox:SetText("")
+  radiusBox:SetText("10")
+  addHeader:SetText("Add a split")
+  saveBtn:Hide(); cancelBtn:Hide()
+end
+
+local function StartEdit(idx)
+  local rt = Route()
+  local s = rt and rt.splits[idx]
+  if not s then return end
+  selected = idx
+  labelBox:SetText(s.name)
+  radiusBox:SetText(s.type == "pos" and tostring(s.radius) or "")
+  addHeader:SetText("Editing split #" .. idx .. " |cff999999(" ..
+    ((s.type == "pos") and "position" or ((s.type == "combat") and "combat start" or "combat end")) .. ")|r")
+  saveBtn:Show(); cancelBtn:Show()
+  RefreshConfig()
+end
+
+local function SaveEdit()
+  local rt = Route()
+  local s = rt and selected and rt.splits[selected]
+  if not s then return end
+  local name = labelBox:GetText()
+  if name ~= "" then s.name = name end -- a rename does not affect any time
+  local changedTrigger = false
+  if s.type == "pos" then
+    local r = tonumber(radiusBox:GetText())
+    if r and r > 0 and r ~= s.radius then s.radius = r; changedTrigger = true end
+  end
+  if changedTrigger then ClearTimes(rt) end -- the trigger moved: old times make no sense anymore
+  Refresh(); StopEdit(); RefreshConfig()
+  msg("Split updated.")
+end
+
 local function MoveSplit(idx, dir)
   local rt = Route()
   if not rt then return end
   if running then msg("Reset the run before reordering splits."); return end
   local j = idx + dir
   if not rt.splits[idx] or not rt.splits[j] then return end
+  StopEdit()
   rt.splits[idx], rt.splits[j] = rt.splits[j], rt.splits[idx]
   ClearTimes(rt) -- order changed, old times invalid
   Refresh(); RefreshConfig()
@@ -500,6 +542,7 @@ MakeButton("New / Load", 80, 214, -35, function()
     msg("Route created: " .. name)
   end
   DuSplitDB.current = name
+  StopEdit()
   Reset(); RefreshConfig()
 end)
 local routeDrop = CreateFrame("Frame", "DuSplitRouteDrop", cfg, "UIDropDownMenuTemplate")
@@ -512,6 +555,7 @@ local function RouteDropSelect()
   if not (name and DuSplitDB.routes[name]) then return end
   if running then msg("Reset the run before switching route."); RefreshConfig(); return end
   DuSplitDB.current = name
+  StopEdit()
   Reset(); RefreshConfig()
 end
 local function RouteDropInit()
@@ -530,7 +574,7 @@ local function RouteDropInit()
 end
 
 -- add split
-MakeText("Add a split", 14, -86, 280, "GameFontNormal")
+addHeader = MakeText("Add a split", 14, -86, 280, "GameFontNormal")
 MakeText("Name", 14, -110)
 labelBox = MakeEdit(150, 60, -106, "")
 MakeText("(optional)", 218, -110)
@@ -545,7 +589,7 @@ MakeButton("Add current position", 282, 14, -156, function()
   local label = labelBox:GetText()
   if label == "" then label = "Point " .. (table.getn(Route().splits) + 1) end
   AddSplit({ name = label, type = "pos", x = x, y = y, radius = radius, zone = GetRealZoneText() })
-  labelBox:SetText(""); RefreshConfig()
+  StopEdit(); RefreshConfig()
 end)
 
 targetText = MakeText("", 14, -190, 282)
@@ -558,17 +602,26 @@ local function AddFromTarget(kind)
   local label = labelBox:GetText()
   if label == "" then label = ((kind == "combat") and "Pull: " or "Kill: ") .. tn end
   AddSplit({ name = label, type = kind, target = tn, guid = guid })
-  labelBox:SetText(""); RefreshConfig()
+  StopEdit(); RefreshConfig()
 end
 MakeButton("Target: Combat Start", 138, 14, -208, function() AddFromTarget("combat") end)
 MakeButton("Target: Combat End", 138, 158, -208, function() AddFromTarget("kill") end)
+saveBtn = MakeButton("Save changes", 138, 14, -234, SaveEdit)
+cancelBtn = MakeButton("Stop editing", 138, 158, -234, function() StopEdit(); RefreshConfig() end)
+saveBtn:Hide(); cancelBtn:Hide()
 
 -- split list
-MakeText("Splits (mouse wheel to scroll)", 14, -244, 280, "GameFontNormal")
+MakeText("Splits (click to edit, wheel to scroll)", 14, -262, 280, "GameFontNormal")
 for i = 1, CFG_ROWS do
   local row = CreateFrame("Frame", nil, cfg)
   row:SetWidth(282); row:SetHeight(16)
-  row:SetPoint("TOPLEFT", cfg, "TOPLEFT", 14, -262 - (i - 1) * 17)
+  row:SetPoint("TOPLEFT", cfg, "TOPLEFT", 14, -280 - (i - 1) * 17)
+  row:EnableMouse(true)
+  row:SetScript("OnMouseUp", function() if this.idx then StartEdit(this.idx) end end)
+  row.hl = row:CreateTexture(nil, "BACKGROUND")
+  row.hl:SetAllPoints(row)
+  row.hl:SetTexture(1, 1, 0, 0.18)
+  row.hl:Hide()
   row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
   row.text:SetWidth(196); row.text:SetHeight(12); row.text:SetJustifyH("LEFT")
@@ -581,6 +634,7 @@ for i = 1, CFG_ROWS do
     local rt = Route()
     if running then msg("Reset the run before deleting splits."); return end
     if rt and rt.splits[this.idx] then
+      StopEdit()
       table.remove(rt.splits, this.idx)
       ClearTimes(rt)
       Refresh(); RefreshConfig()
@@ -603,16 +657,16 @@ for i = 1, CFG_ROWS do
 end
 
 local autoCheck = CreateFrame("CheckButton", "DuSplitAutoStart", cfg, "UICheckButtonTemplate")
-autoCheck:SetPoint("TOPLEFT", cfg, "TOPLEFT", 10, -436)
+autoCheck:SetPoint("TOPLEFT", cfg, "TOPLEFT", 10, -452)
 getglobal("DuSplitAutoStartText"):SetText("Auto-start when the first split triggers")
 autoCheck:SetScript("OnClick", function()
   DuSplitDB.autostart = (this:GetChecked() and true or false)
   Refresh()
 end)
 
-MakeButton("Start", 90, 14, -466, function() Start() end)
-MakeButton("Reset", 90, 110, -466, function() Reset() end)
-MakeButton("Close", 90, 206, -466, function() cfg:Hide() end)
+MakeButton("Start", 90, 14, -482, function() Start() end)
+MakeButton("Reset", 90, 110, -482, function() Reset() end)
+MakeButton("Close", 90, 206, -482, function() cfg:Hide() end)
 
 cfg:SetScript("OnMouseWheel", function()
   if arg1 > 0 then listOffset = listOffset - 1 else listOffset = listOffset + 1 end

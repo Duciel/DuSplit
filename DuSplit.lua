@@ -3,6 +3,7 @@
 
 local ROWS = 10
 local running, startT, cur, times = false, 0, 1, {}
+local armed = true -- waiting for the first split to auto-start the run
 local lastPrev = 0
 local inCombatChat = false
 
@@ -105,13 +106,14 @@ local function Refresh()
       r.name:SetText(""); r.delta:SetText(""); r.time:SetText("")
     end
   end
-  sub:SetText("PB: " .. Fmt(rt.pbTotal))
+  sub:SetText("PB: " .. Fmt(rt.pbTotal) .. ((armed and not running and DuSplitDB.autostart ~= false and n >= 2) and "   |cff00ff00armed|r" or ""))
 end
 
 -------------------------------------------------------------------- Logic
 local function Finish()
   local rt = Route()
   running = false
+  armed = false
   local total = times[table.getn(rt.splits)]
   msg("Run finished: " .. Fmt(total))
   if not rt.pbTotal or total < rt.pbTotal then
@@ -125,7 +127,14 @@ end
 
 local function DoSplit(why)
   local rt = Route()
-  if not running or not rt then return end
+  if not rt then return end
+  if not running then
+    -- auto-start: the first split of the route is the start trigger (recorded at 0:00.00)
+    if why == "manual" or not armed or DuSplitDB.autostart == false or table.getn(rt.splits) < 2 then return end
+    running = true; startT = GetTime(); cur = 1; times = {}; lastPrev = 0
+    armed = false
+    msg("Run started.")
+  end
   local s = rt.splits[cur]
   if not s then return end
   local t = GetTime() - startT
@@ -149,12 +158,14 @@ local function Start()
   local rt = Route()
   if not rt or table.getn(rt.splits) == 0 then msg("No route or empty route."); return end
   running = true; startT = GetTime(); cur = 1; times = {}; lastPrev = 0
+  armed = false
   msg("Run started.")
   Refresh()
 end
 
 local function Reset()
   running = false; cur = 1; times = {}; lastPrev = 0
+  armed = true
   timer:SetText("0:00.00")
   Refresh()
 end
@@ -202,7 +213,10 @@ f:RegisterEvent("AUTO_ATTACK_OTHER")
 
 local function CurSplit()
   local rt = Route()
-  if running and rt then return rt.splits[cur] end
+  if not rt then return end
+  if running then return rt.splits[cur] end
+  -- not running: while armed, the first split is watched as the auto-start trigger
+  if armed and DuSplitDB.autostart ~= false and table.getn(rt.splits) >= 2 then return rt.splits[1] end
 end
 
 f:SetScript("OnEvent", function()
@@ -338,7 +352,7 @@ end
 
 -------------------------------------------------------------------- Config window
 local cfg = CreateFrame("Frame", "DuSplitConfig", UIParent)
-cfg:SetWidth(310); cfg:SetHeight(460)
+cfg:SetWidth(310); cfg:SetHeight(496)
 cfg:SetPoint("CENTER", UIParent, "CENTER", -250, 0)
 cfg:SetFrameStrata("DIALOG")
 cfg:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -399,7 +413,7 @@ local function RefreshConfig()
     if s then
       local kind = (s.type == "pos") and "pos" or ((s.type == "combat") and "combat start" or "combat end")
       row.text:SetText(idx .. ". " .. s.name .. " |cff999999[" .. kind .. "]|r")
-      row.del.idx = idx
+      row.del.idx = idx; row.up.idx = idx; row.down.idx = idx
       row:Show()
     else
       row:Hide()
@@ -421,6 +435,17 @@ local function EnsureRoute()
     DuSplitDB.routes["Default"] = DuSplitDB.routes["Default"] or { splits = {} }
     DuSplitDB.current = "Default"
   end
+end
+
+local function MoveSplit(idx, dir)
+  local rt = Route()
+  if not rt then return end
+  if running then msg("Reset the run before reordering splits."); return end
+  local j = idx + dir
+  if not rt.splits[idx] or not rt.splits[j] then return end
+  rt.splits[idx], rt.splits[j] = rt.splits[j], rt.splits[idx]
+  rt.pb = nil; rt.pbTotal = nil; rt.best = nil -- order changed, old times invalid
+  Refresh(); RefreshConfig()
 end
 
 MakeText("DuSplit - Config", 0, -12, 310, "GameFontNormal"):SetJustifyH("CENTER")
@@ -486,7 +511,7 @@ for i = 1, CFG_ROWS do
   row:SetPoint("TOPLEFT", cfg, "TOPLEFT", 14, -262 - (i - 1) * 17)
   row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
-  row.text:SetWidth(250); row.text:SetHeight(12); row.text:SetJustifyH("LEFT")
+  row.text:SetWidth(196); row.text:SetHeight(12); row.text:SetJustifyH("LEFT")
   btnN = btnN + 1
   row.del = CreateFrame("Button", "DuSplitBtn" .. btnN, row, "UIPanelButtonTemplate")
   row.del:SetWidth(22); row.del:SetHeight(16)
@@ -494,6 +519,7 @@ for i = 1, CFG_ROWS do
   row.del:SetText("X")
   row.del:SetScript("OnClick", function()
     local rt = Route()
+    if running then msg("Reset the run before deleting splits."); return end
     if rt and rt.splits[this.idx] then
       table.remove(rt.splits, this.idx)
       rt.pb = nil; rt.pbTotal = nil; rt.best = nil
@@ -501,12 +527,32 @@ for i = 1, CFG_ROWS do
       msg("Split removed (PB cleared).")
     end
   end)
+  btnN = btnN + 1
+  row.down = CreateFrame("Button", "DuSplitBtn" .. btnN, row, "UIPanelButtonTemplate")
+  row.down:SetWidth(20); row.down:SetHeight(16)
+  row.down:SetPoint("RIGHT", row.del, "LEFT", -2, 0)
+  row.down:SetText("v")
+  row.down:SetScript("OnClick", function() MoveSplit(this.idx, 1) end)
+  btnN = btnN + 1
+  row.up = CreateFrame("Button", "DuSplitBtn" .. btnN, row, "UIPanelButtonTemplate")
+  row.up:SetWidth(20); row.up:SetHeight(16)
+  row.up:SetPoint("RIGHT", row.down, "LEFT", -2, 0)
+  row.up:SetText("^")
+  row.up:SetScript("OnClick", function() MoveSplit(this.idx, -1) end)
   listRows[i] = row
 end
 
-MakeButton("Start", 90, 14, -438, function() Start() end)
-MakeButton("Reset", 90, 110, -438, function() Reset() end)
-MakeButton("Close", 90, 206, -438, function() cfg:Hide() end)
+local autoCheck = CreateFrame("CheckButton", "DuSplitAutoStart", cfg, "UICheckButtonTemplate")
+autoCheck:SetPoint("TOPLEFT", cfg, "TOPLEFT", 10, -436)
+getglobal("DuSplitAutoStartText"):SetText("Auto-start when the first split triggers")
+autoCheck:SetScript("OnClick", function()
+  DuSplitDB.autostart = (this:GetChecked() and true or false)
+  Refresh()
+end)
+
+MakeButton("Start", 90, 14, -466, function() Start() end)
+MakeButton("Reset", 90, 110, -466, function() Reset() end)
+MakeButton("Close", 90, 206, -466, function() cfg:Hide() end)
 
 cfg:SetScript("OnMouseWheel", function()
   if arg1 > 0 then listOffset = listOffset - 1 else listOffset = listOffset + 1 end
@@ -514,7 +560,10 @@ cfg:SetScript("OnMouseWheel", function()
 end)
 cfg:RegisterEvent("PLAYER_TARGET_CHANGED")
 cfg:SetScript("OnEvent", function() if this:IsShown() then UpdateTarget() end end)
-cfg:SetScript("OnShow", function() UpdateTarget(); RefreshConfig() end)
+cfg:SetScript("OnShow", function()
+  UpdateTarget(); RefreshConfig()
+  autoCheck:SetChecked(DuSplitDB.autostart ~= false)
+end)
 
 function DuSplit_ToggleConfig()
   if cfg:IsShown() then cfg:Hide() else cfg:Show() end

@@ -37,7 +37,7 @@ end
 
 -------------------------------------------------------------------- UI
 local f = CreateFrame("Frame", "DuSplitFrame", UIParent)
-f:SetWidth(240); f:SetHeight(30 + ROWS * 16 + 40)
+f:SetWidth(280); f:SetHeight(30 + ROWS * 16 + 40)
 f:SetPoint("CENTER", UIParent, "CENTER", 300, 0)
 f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
   edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 16, edgeSize = 12,
@@ -55,12 +55,12 @@ for i = 1, ROWS do
   local r = {}
   r.name = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   r.name:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -24 - (i - 1) * 16)
-  r.name:SetWidth(100); r.name:SetJustifyH("LEFT")
+  r.name:SetWidth(140); r.name:SetJustifyH("LEFT")
   r.delta = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  r.delta:SetPoint("TOPLEFT", f, "TOPLEFT", 112, -24 - (i - 1) * 16)
+  r.delta:SetPoint("TOPLEFT", f, "TOPLEFT", 152, -24 - (i - 1) * 16)
   r.delta:SetWidth(50); r.delta:SetJustifyH("RIGHT")
   r.time = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  r.time:SetPoint("TOPLEFT", f, "TOPLEFT", 165, -24 - (i - 1) * 16)
+  r.time:SetPoint("TOPLEFT", f, "TOPLEFT", 205, -24 - (i - 1) * 16)
   r.time:SetWidth(65); r.time:SetJustifyH("RIGHT")
   rows[i] = r
 end
@@ -69,6 +69,24 @@ local timer = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 timer:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -10, 20)
 local sub = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 sub:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 8)
+
+-- Names never wrap: they are cut with "..." so that prefix..name..suffix fits maxW pixels.
+local measure = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+measure:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+measure:SetAlpha(0)
+local function Fit(prefix, name, suffix, maxW)
+  name = (string.gsub(name or "", "[\r\n]+", " "))
+  name = (string.gsub(name, "|n", " "))
+  measure:SetText(prefix .. name .. suffix)
+  if measure:GetStringWidth() <= maxW then return prefix .. name .. suffix end
+  local n = string.len(name)
+  while n > 0 do
+    n = n - 1
+    measure:SetText(prefix .. string.sub(name, 1, n) .. "..." .. suffix)
+    if measure:GetStringWidth() <= maxW then break end
+  end
+  return prefix .. string.sub(name, 1, n) .. "..." .. suffix
+end
 
 local function Refresh()
   local rt = Route()
@@ -87,7 +105,7 @@ local function Refresh()
     local r = rows[i]
     local s = rt.splits[idx]
     if s then
-      r.name:SetText(s.name)
+      r.name:SetText(Fit("", s.name, "", 138))
       if idx < cur and times[idx] then
         r.time:SetText(Fmt(times[idx]))
         if rt.pb and rt.pb[idx] then
@@ -315,6 +333,7 @@ end)
 local function AddSplit(s)
   local rt = Route()
   if not rt then msg("Create a route first: /ds new <name>"); return end
+  s.name = (string.gsub(s.name, "[\r\n]+", " "))
   table.insert(rt.splits, s)
   ClearTimes(rt) -- route changed, old times invalid
   msg("Added split #" .. table.getn(rt.splits) .. ": " .. s.name)
@@ -448,7 +467,7 @@ local function RefreshConfig()
     local s = rt and rt.splits[idx]
     if s then
       local kind = (s.type == "pos") and "pos" or ((s.type == "combat") and "combat start" or "combat end")
-      row.text:SetText(idx .. ". " .. s.name .. " |cff999999[" .. kind .. "]|r")
+      row.text:SetText(Fit(idx .. ". ", s.name, " |cff999999[" .. kind .. "]|r", 192))
       row.del.idx = idx; row.up.idx = idx; row.down.idx = idx
       row.idx = idx
       if selected == idx then row.hl:Show() else row.hl:Hide() end
@@ -502,6 +521,7 @@ local function SaveEdit()
   local s = rt and selected and rt.splits[selected]
   if not s then return end
   local name = labelBox:GetText()
+  name = (string.gsub(name, "[\r\n]+", " "))
   if name ~= "" then s.name = name end -- a rename does not affect any time
   local changedTrigger = false
   if s.type == "pos" then

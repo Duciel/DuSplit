@@ -106,10 +106,28 @@ local function Refresh()
       r.name:SetText(""); r.delta:SetText(""); r.time:SetText("")
     end
   end
-  sub:SetText("PB: " .. Fmt(rt.pbTotal) .. ((armed and not running and DuSplitDB.autostart ~= false and n >= 2) and "   |cff00ff00armed|r" or ""))
+  local extra = ""
+  local pend = DuSplitDB.pending
+  if pend and pend.route == DuSplitDB.current then extra = "   |cffffff00new PB: " .. Fmt(pend.total) .. "|r" end
+  if armed and not running and DuSplitDB.autostart ~= false and n >= 2 then extra = extra .. "   |cff00ff00armed|r" end
+  sub:SetText("PB: " .. Fmt(rt.pbTotal) .. extra)
 end
 
 -------------------------------------------------------------------- Logic
+-- A new PB is kept "pending" after a run so the finished splits can still be compared to the old PB.
+-- It is committed on Reset, on a new run, or on the next loading screen (reload / leaving the raid).
+local function CommitPending()
+  local p = DuSplitDB.pending
+  if not p then return end
+  DuSplitDB.pending = nil
+  local rt = DuSplitDB.routes[p.route]
+  if rt and (not rt.pbTotal or p.total < rt.pbTotal) then
+    rt.pbTotal = p.total
+    rt.pb = p.times
+    msg("Personal best saved: " .. Fmt(p.total))
+  end
+end
+
 local function Finish()
   local rt = Route()
   running = false
@@ -117,10 +135,10 @@ local function Finish()
   local total = times[table.getn(rt.splits)]
   msg("Run finished: " .. Fmt(total))
   if not rt.pbTotal or total < rt.pbTotal then
-    rt.pbTotal = total
-    rt.pb = {}
-    for i = 1, table.getn(times) do rt.pb[i] = times[i] end
-    msg("New personal best!")
+    local t = {}
+    for i = 1, table.getn(times) do t[i] = times[i] end
+    DuSplitDB.pending = { route = DuSplitDB.current, total = total, times = t }
+    msg("New personal best! It is saved on Reset, or when you zone/reload - until then splits are compared to the old PB.")
   end
   Refresh()
 end
@@ -157,6 +175,7 @@ end
 local function Start()
   local rt = Route()
   if not rt or table.getn(rt.splits) == 0 then msg("No route or empty route."); return end
+  CommitPending()
   running = true; startT = GetTime(); cur = 1; times = {}; lastPrev = 0
   armed = false
   msg("Run started.")
@@ -164,6 +183,7 @@ local function Start()
 end
 
 local function Reset()
+  CommitPending()
   running = false; cur = 1; times = {}; lastPrev = 0
   armed = true
   timer:SetText("0:00.00")
@@ -196,6 +216,7 @@ end
 -------------------------------------------------------------------- Events
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_REGEN_DISABLED")
+f:RegisterEvent("PLAYER_ENTERING_WORLD") -- loading screen: reload, entering/leaving an instance
 f:RegisterEvent("PLAYER_REGEN_ENABLED")
 f:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
 f:RegisterEvent("CHAT_MSG_COMBAT_SELF_HITS")
@@ -226,6 +247,11 @@ f:SetScript("OnEvent", function()
     DuSplitDB.routes = DuSplitDB.routes or {}
     DuSplitDB.mapscale = DuSplitDB.mapscale or 3000
     Refresh()
+    return
+  end
+
+  if event == "PLAYER_ENTERING_WORLD" then
+    if not running then CommitPending(); Refresh() end
     return
   end
 
@@ -281,7 +307,7 @@ local function AddSplit(s)
   local rt = Route()
   if not rt then msg("Create a route first: /ds new <name>"); return end
   table.insert(rt.splits, s)
-  rt.pb = nil; rt.pbTotal = nil; rt.best = nil -- route changed, old times invalid
+  rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil -- route changed, old times invalid
   msg("Added split #" .. table.getn(rt.splits) .. ": " .. s.name)
   Refresh()
 end
@@ -326,7 +352,7 @@ SlashCmdList["DUSPLIT"] = function(input)
     local rt, n = Route(), tonumber(rest)
     if rt and n and rt.splits[n] then
       table.remove(rt.splits, n)
-      rt.pb = nil; rt.pbTotal = nil; rt.best = nil
+      rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil
       Refresh(); msg("Split removed (PB cleared).")
     end
   elseif cmd == "start" then Start()
@@ -444,7 +470,7 @@ local function MoveSplit(idx, dir)
   local j = idx + dir
   if not rt.splits[idx] or not rt.splits[j] then return end
   rt.splits[idx], rt.splits[j] = rt.splits[j], rt.splits[idx]
-  rt.pb = nil; rt.pbTotal = nil; rt.best = nil -- order changed, old times invalid
+  rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil -- order changed, old times invalid
   Refresh(); RefreshConfig()
 end
 
@@ -522,7 +548,7 @@ for i = 1, CFG_ROWS do
     if running then msg("Reset the run before deleting splits."); return end
     if rt and rt.splits[this.idx] then
       table.remove(rt.splits, this.idx)
-      rt.pb = nil; rt.pbTotal = nil; rt.best = nil
+      rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil
       Refresh(); RefreshConfig()
       msg("Split removed (PB cleared).")
     end

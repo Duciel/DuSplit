@@ -190,6 +190,15 @@ local function Reset()
   Refresh()
 end
 
+-- The route layout changed (split added/removed/moved): no time can be trusted anymore.
+-- Wipes PB, best segments, pending PB and the times of the run currently shown.
+local function ClearTimes(rt)
+  rt.pb = nil; rt.pbTotal = nil; rt.best = nil
+  DuSplitDB.pending = nil
+  if running then msg("Run reset because the route changed.") end
+  Reset()
+end
+
 local function NameMatch(text, name)
   if not text or not name then return false end
   return string.find(string.lower(text), string.lower(name), 1, true) ~= nil
@@ -307,7 +316,7 @@ local function AddSplit(s)
   local rt = Route()
   if not rt then msg("Create a route first: /ds new <name>"); return end
   table.insert(rt.splits, s)
-  rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil -- route changed, old times invalid
+  ClearTimes(rt) -- route changed, old times invalid
   msg("Added split #" .. table.getn(rt.splits) .. ": " .. s.name)
   Refresh()
 end
@@ -352,7 +361,7 @@ SlashCmdList["DUSPLIT"] = function(input)
     local rt, n = Route(), tonumber(rest)
     if rt and n and rt.splits[n] then
       table.remove(rt.splits, n)
-      rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil
+      ClearTimes(rt)
       Refresh(); msg("Split removed (PB cleared).")
     end
   elseif cmd == "start" then Start()
@@ -427,7 +436,7 @@ local listRows, listOffset = {}, 0
 local routeBox, labelBox, radiusBox, curRoute, targetText
 
 local function RefreshConfig()
-  curRoute:SetText("Current route: |cffffff00" .. (DuSplitDB.current or "none") .. "|r")
+  getglobal("DuSplitRouteDropText"):SetText(DuSplitDB.current or "(no route)")
   local rt = Route()
   local n = rt and table.getn(rt.splits) or 0
   if listOffset > n - CFG_ROWS then listOffset = n - CFG_ROWS end
@@ -470,7 +479,7 @@ local function MoveSplit(idx, dir)
   local j = idx + dir
   if not rt.splits[idx] or not rt.splits[j] then return end
   rt.splits[idx], rt.splits[j] = rt.splits[j], rt.splits[idx]
-  rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil -- order changed, old times invalid
+  ClearTimes(rt) -- order changed, old times invalid
   Refresh(); RefreshConfig()
 end
 
@@ -493,7 +502,32 @@ MakeButton("New / Load", 80, 214, -35, function()
   DuSplitDB.current = name
   Reset(); RefreshConfig()
 end)
-curRoute = MakeText("", 14, -62, 280)
+local routeDrop = CreateFrame("Frame", "DuSplitRouteDrop", cfg, "UIDropDownMenuTemplate")
+routeDrop:SetPoint("TOPLEFT", cfg, "TOPLEFT", -2, -58)
+-- width helper: argument order differs between client builds, so try both
+if not pcall(UIDropDownMenu_SetWidth, 230, routeDrop) then pcall(UIDropDownMenu_SetWidth, routeDrop, 230) end
+
+local function RouteDropSelect()
+  local name = this.value
+  if not (name and DuSplitDB.routes[name]) then return end
+  if running then msg("Reset the run before switching route."); RefreshConfig(); return end
+  DuSplitDB.current = name
+  Reset(); RefreshConfig()
+end
+local function RouteDropInit()
+  if not DuSplitDB or not DuSplitDB.routes then return end
+  local names = {}
+  for k in pairs(DuSplitDB.routes) do table.insert(names, k) end
+  table.sort(names)
+  for i = 1, table.getn(names) do
+    local info = {}
+    info.text = names[i]
+    info.value = names[i]
+    info.func = RouteDropSelect
+    info.checked = (names[i] == DuSplitDB.current)
+    UIDropDownMenu_AddButton(info)
+  end
+end
 
 -- add split
 MakeText("Add a split", 14, -86, 280, "GameFontNormal")
@@ -548,7 +582,7 @@ for i = 1, CFG_ROWS do
     if running then msg("Reset the run before deleting splits."); return end
     if rt and rt.splits[this.idx] then
       table.remove(rt.splits, this.idx)
-      rt.pb = nil; rt.pbTotal = nil; rt.best = nil; DuSplitDB.pending = nil
+      ClearTimes(rt)
       Refresh(); RefreshConfig()
       msg("Split removed (PB cleared).")
     end
@@ -587,6 +621,7 @@ end)
 cfg:RegisterEvent("PLAYER_TARGET_CHANGED")
 cfg:SetScript("OnEvent", function() if this:IsShown() then UpdateTarget() end end)
 cfg:SetScript("OnShow", function()
+  UIDropDownMenu_Initialize(routeDrop, RouteDropInit)
   UpdateTarget(); RefreshConfig()
   autoCheck:SetChecked(DuSplitDB.autostart ~= false)
 end)

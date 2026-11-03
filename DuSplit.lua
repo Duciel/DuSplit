@@ -20,11 +20,13 @@ local function Route()
   return DuSplitDB.routes[DuSplitDB.current]
 end
 
--- Position: UnitPosition exists with SuperWoW (yards). Otherwise fall back to map coords * mapscale.
+-- Position: UnitPosition (SuperWoW / ClassicAPI) gives world yards. Only the first two returns
+-- are used and only 2D distance is compared, so the x/y order of the mod does not matter.
+-- Otherwise fall back to map coords * mapscale.
 local function GetPos()
   if UnitPosition then
     local x, y = UnitPosition("player")
-    if x then return x, y end
+    if x and y then return x, y end
   end
   local x, y = GetPlayerMapPosition("player")
   if x and (x ~= 0 or y ~= 0) then
@@ -162,6 +164,24 @@ local function NameMatch(text, name)
   return string.find(string.lower(text), string.lower(name), 1, true) ~= nil
 end
 
+-- GUID of a unit token (SuperWoW: UnitExists returns the guid as 2nd value)
+local function GuidOf(unit)
+  local ok, guid = UnitExists(unit)
+  if type(guid) == "string" then return guid end
+end
+
+local function GuidEq(a, b)
+  return a and b and string.lower(a) == string.lower(b)
+end
+
+-- Does this unit token / guid match the split's mob? GUID wins when the split has one.
+local function UnitMatches(unit, s)
+  if s.guid then
+    return GuidEq(GuidOf(unit), s.guid)
+  end
+  return NameMatch(UnitName(unit), s.target)
+end
+
 -------------------------------------------------------------------- Events
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_REGEN_DISABLED")
@@ -173,6 +193,12 @@ f:RegisterEvent("CHAT_MSG_COMBAT_CREATURE_VS_SELF_HITS")
 f:RegisterEvent("CHAT_MSG_COMBAT_CREATURE_VS_SELF_MISSES")
 f:RegisterEvent("CHAT_MSG_SPELL_SELF_DAMAGE")
 f:RegisterEvent("CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE")
+-- nampower events (ignored by the client if nampower is not installed)
+f:RegisterEvent("UNIT_DIED")                 -- arg1 = guid of the dead unit
+f:RegisterEvent("SPELL_DAMAGE_EVENT_SELF")   -- arg1 = targetGuid, arg2 = casterGuid
+f:RegisterEvent("SPELL_DAMAGE_EVENT_OTHER")
+f:RegisterEvent("AUTO_ATTACK_SELF")          -- arg1 = attackerGuid, arg2 = targetGuid
+f:RegisterEvent("AUTO_ATTACK_OTHER")
 
 local function CurSplit()
   local rt = Route()
@@ -192,17 +218,26 @@ f:SetScript("OnEvent", function()
   local s = CurSplit()
   if not s then return end
 
-  if event == "PLAYER_REGEN_DISABLED" then
+  if event == "UNIT_DIED" then
+    if s.type == "kill" and s.guid and GuidEq(arg1, s.guid) then DoSplit("kill") end
+  elseif event == "SPELL_DAMAGE_EVENT_SELF" or event == "SPELL_DAMAGE_EVENT_OTHER"
+      or event == "AUTO_ATTACK_SELF" or event == "AUTO_ATTACK_OTHER" then
+    -- a damage event involving the mob while we are in combat = we are in combat with it
+    if s.type == "combat" and s.guid and UnitAffectingCombat("player")
+        and (GuidEq(arg1, s.guid) or GuidEq(arg2, s.guid)) then
+      DoSplit("combat")
+    end
+  elseif event == "PLAYER_REGEN_DISABLED" then
     if s.type == "combat" then
-      -- check target / target of target
-      if NameMatch(UnitName("target"), s.target) or NameMatch(UnitName("targettarget"), s.target) then
-        DoSplit("combat")
-      end
+      if UnitMatches("target", s) or UnitMatches("targettarget", s) then DoSplit("combat") end
     end
   elseif event == "CHAT_MSG_COMBAT_HOSTILE_DEATH" then
-    if s.type == "kill" and NameMatch(arg1, s.target) then DoSplit("kill") end
-  elseif s.type == "combat" and UnitAffectingCombat("player") then
-    -- combat chat lines naming the mob (covers pulls where the target was not selected)
+    -- fallback without nampower: name only
+    if s.type == "kill" and not s.guid and NameMatch(arg1, s.target) then DoSplit("kill") end
+    -- GUID split but nampower missing (no GetUnitGUID): UNIT_DIED will never fire, use the name
+    if s.type == "kill" and s.guid and not GetUnitGUID and NameMatch(arg1, s.target) then DoSplit("kill") end
+  elseif s.type == "combat" and not s.guid and UnitAffectingCombat("player") then
+    -- combat chat lines naming the mob (name-only fallback)
     if NameMatch(arg1, s.target) then DoSplit("combat") end
   end
 end)
@@ -214,6 +249,10 @@ f:SetScript("OnUpdate", function()
   if acc < 0.1 then return end
   acc = 0
   local s = CurSplit()
+  if s and s.type == "combat" and s.guid and UnitAffectingCombat("player") then
+    -- SuperWoW: a guid works as a unit token while the mob is loaded
+    if UnitExists(s.guid) and UnitAffectingCombat(s.guid) then DoSplit("combat") end
+  end
   if s and s.type == "pos" then
     local x, y = GetPos()
     if x and (not s.zone or s.zone == GetRealZoneText()) then
@@ -251,7 +290,9 @@ SlashCmdList["DUSPLIT"] = function(input)
     local tn = UnitName("target")
     if not tn then msg("Target the mob first."); return end
     local label = rest ~= "" and rest or tn
-    AddSplit({ name = label, type = (cmd == "addcombat") and "combat" or "kill", target = tn })
+    local guid = GuidOf("target")
+    if guid then msg("Using GUID " .. guid) else msg("No GUID available (SuperWoW?) - matching by name.") end
+    AddSplit({ name = label, type = (cmd == "addcombat") and "combat" or "kill", target = tn, guid = guid })
   elseif cmd == "addpos" then
     local _, _, radius, label = string.find(rest, "^(%d+)%s*(.*)$")
     radius = tonumber(radius) or 10
@@ -264,7 +305,8 @@ SlashCmdList["DUSPLIT"] = function(input)
     if not rt then return end
     for i = 1, table.getn(rt.splits) do
       local s = rt.splits[i]
-      msg(i .. ". " .. s.name .. " [" .. s.type .. (s.target and (": " .. s.target) or "") .. "]")
+      msg(i .. ". " .. s.name .. " [" .. s.type .. (s.target and (": " .. s.target) or "")
+        .. (s.guid and (" " .. s.guid) or "") .. "]")
     end
   elseif cmd == "del" then
     local rt, n = Route(), tonumber(rest)

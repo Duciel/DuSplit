@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: DuSplit
+## Notes: In-game speedrun splits (LiveSplit-style). Splits on combat start, mob death, or reaching a position.
+## Author: Duciel
+## Version: 0.1
+## SavedVariables: DuSplitDB
+
+DuSplit.lua
